@@ -57,3 +57,5 @@ The first release is focused on getting the baseline workflow working:
 - local audit/history
 
 More advanced package security can come later such as [encrypion and signatures](https://docs.securosys.com/docker_encryption/Concepts/).
+
+But next release would still focus on a method to update the `updater` service too
