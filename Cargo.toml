@@ -9,3 +9,17 @@ repository = "https://github.com/marcelo-6/caisson"
 homepage = "https://github.com/marcelo-6/caisson"
 keywords = ["docker", "edge", "offline", "updater", "airgap"]
 categories = ["command-line-utilities"]
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+semver = { version = "1.0", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tar = "0.4"
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+toml = "1"
+uuid = { version = "1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tempfile = "3.18.0"
