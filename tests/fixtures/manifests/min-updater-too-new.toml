@@ -1,0 +1,15 @@
+format_version = 1
+package_type = "service"
+package_version = "1.2.3"
+created_at = "2026-03-16T18:30:00Z"
+
+[target]
+service = "frontend"
+service_revision = "frontend-v1"
+platform = "linux/amd64"
+
+[image]
+reference = "example/frontend:1.2.3"
+
+[compatibility]
+min_updater_version = "0.2.0"
