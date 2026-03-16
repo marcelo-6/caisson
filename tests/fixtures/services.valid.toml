@@ -1,0 +1,22 @@
+catalog_version = 1
+
+[[services]]
+name = "frontend"
+service_revision = "frontend-v1"
+platform = "linux/amd64"
+runtime_mode = "docker"
+
+[services.docker]
+container_name = "frontend"
+image_reference = "example/frontend:current"
+
+[[services]]
+name = "backend"
+service_revision = "backend-v2"
+platform = "linux/amd64"
+runtime_mode = "compose"
+
+[services.compose]
+project = "caisson-stack"
+file = "tests/fixtures/compose/backend.compose.yaml"
+service = "backend"
