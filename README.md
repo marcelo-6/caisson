@@ -1,6 +1,23 @@
-# Caisson
+<!-- markdownlint-disable MD033 -->
+<!-- markdownlint-disable MD041 -->
+<div align="center">
 
-`Caisson` is an offline Docker service updater for edge devices.
+<h4>Offline Docker service updater for airgapped edge devices.</h4>
+
+<a href="https://github.com/marcelo-6/caisson/relseases"><img src="https://img.shields.io/github/v/release/marcelo-6/caisson?logo=github" alt="GitHub Release"></a>
+<a href="https://crates.io/crates/caisson/"><img src="https://img.shields.io/crates/v/caisson?logo=Rust" alt="Crate Release"></a>
+<a href="https://codecov.io/gh/marcelo-6/caisson"><img src="https://codecov.io/gh/marcelo-6/caisson/graph/badge.svg?token=TPJMXTJ5ZQ&amp;logo=Codecov&amp;logoColor=white" alt="Coverage"></a>
+<br>
+<a href="https://github.com/marcelo-6/caisson/actions?query=workflow%3A%22CI%22"><img src="https://img.shields.io/github/actions/workflow/status/marcelo-6/caisson/ci.yml?branch=main&amp;logo=GitHub%20Actions&amp;logoColor=white&amp;label=CI" alt="Continuous Integration"></a>
+<a href="https://github.com/marcelo-6/caisson/actions?query=workflow%3A%22CD%22"><img src="https://img.shields.io/github/actions/workflow/status/marcelo-6/caisson/cd.yml?logo=GitHub%20Actions&amp;logoColor=white&amp;label=CD" alt="Continuous Deployment"></a>
+<a href="https://docs.rs/caisson/"><img src="https://img.shields.io/docsrs/caisson?logo=Rust&amp;logoColor=white" alt="Documentation"></a>
+
+<img alt="Crates.io Total Downloads" src="https://img.shields.io/crates/d/caisson?logo=Rust">
+<img alt="GitHub Downloads (all assets, all releases)" src="https://img.shields.io/github/downloads/marcelo-6/caisson/total?logo=GitHub">
+<br>
+<img alt="GitHub commits since latest release" src="https://img.shields.io/github/commits-since/marcelo-6/caisson/latest">
+
+</div>
 
 ## Status
 
@@ -64,4 +81,18 @@ The first release is focused on getting the baseline workflow working:
 > - `0.1.0`: cli for offline updater
 > - `0.2.0`: minimal GUI on top of the same application logic
 > - `0.3.0`: self-updater support
-> - `0.4.0`: [encrypion and signatures](https://docs.securosys.com/docker_encryption/Concepts/)
+> - `0.4.0`: encryption and signatures
+
+## Current CLI
+
+```bash
+cargo run -- validate path/to/update.edgepkg --services path/to/services.toml --state-dir .caisson-state
+```
+
+That command:
+
+- stages the package locally
+- validates the `.edgepkg` tar structure
+- parses `manifest.toml`
+- checks target service compatibility against `services.toml`
+- persists validation records and audit events under the chosen state directory
