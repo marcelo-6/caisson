@@ -7,7 +7,7 @@
 > [!NOTE]
 > This project is in early alpha and not ready for production use.
 
-The goal of `Caisson` is to provide a update workflow for predefined Docker services on air-gapped or offline devices. Operators should only need to upload a package apply the update. The backend handles validation, image import, service restart, health checks, rollback, and local audit history.
+The goal of `Caisson` is to provide an update workflow for predefined Docker services on air-gapped or offline devices. In `0.1.0`, operators should only need to point the CLI at a local package file and apply the update. The backend handles validation, image import, service restart, health checks, rollback, and local audit history.
 
 ## Why the name
 
@@ -18,12 +18,14 @@ A `caisson` is a controlled chamber used to move work safely through difficult o
 `Caisson` is focused on:
 
 - accept an offline update package
+- work through a CLI-first operator flow in `0.1.0`
 - validate it
 - load the Docker image
 - update a predefined service
 - run health checks
 - roll back automatically if the update fails
 - keep a local history of what happened
+- support predefined services that use either direct Docker control or developer-provided Docker Compose definitions
 
 ## What it is not
 
@@ -56,6 +58,10 @@ The first release is focused on getting the baseline workflow working:
 - rollback
 - local audit/history
 
-More advanced package security can come later such as [encrypion and signatures](https://docs.securosys.com/docker_encryption/Concepts/).
-
-But next release would still focus on a method to update the `updater` service too
+> [!NOTE]
+> Current roadmap:
+>
+> - `0.1.0`: cli for offline updater
+> - `0.2.0`: minimal GUI on top of the same application logic
+> - `0.3.0`: self-updater support
+> - `0.4.0`: [encrypion and signatures](https://docs.securosys.com/docker_encryption/Concepts/)
