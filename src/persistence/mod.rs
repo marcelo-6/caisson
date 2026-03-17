@@ -34,7 +34,14 @@ pub trait StateStore {
         &self,
         service_name: &str,
     ) -> Result<Option<ServiceStateRecord>, PersistenceError>;
+    fn list_service_states(&self) -> Result<Vec<ServiceStateRecord>, PersistenceError>;
     fn save_update_attempt(&self, record: &UpdateAttemptRecord) -> Result<(), PersistenceError>;
+    fn load_update_attempt(
+        &self,
+        update_id: Uuid,
+    ) -> Result<Option<UpdateAttemptRecord>, PersistenceError>;
+    fn list_update_attempts(&self) -> Result<Vec<UpdateAttemptRecord>, PersistenceError>;
+    fn list_audit_events(&self) -> Result<Vec<AuditEvent>, PersistenceError>;
     fn append_audit_event(&self, event: &AuditEvent) -> Result<(), PersistenceError>;
 }
 
@@ -171,9 +178,65 @@ impl StateStore for FilesystemStore {
         read_json_optional(&self.service_state_path(service_name))
     }
 
+    fn list_service_states(&self) -> Result<Vec<ServiceStateRecord>, PersistenceError> {
+        self.ensure_layout()?;
+        let mut records = read_json_dir::<ServiceStateRecord>(&self.root.join("service-states"))?;
+        records.sort_by(|left, right| left.service_name.cmp(&right.service_name));
+        Ok(records)
+    }
+
     fn save_update_attempt(&self, record: &UpdateAttemptRecord) -> Result<(), PersistenceError> {
         self.ensure_layout()?;
         write_json_atomic(&self.update_attempt_path(record.update_id), record)
+    }
+
+    fn load_update_attempt(
+        &self,
+        update_id: Uuid,
+    ) -> Result<Option<UpdateAttemptRecord>, PersistenceError> {
+        self.ensure_layout()?;
+        read_json_optional(&self.update_attempt_path(update_id))
+    }
+
+    fn list_update_attempts(&self) -> Result<Vec<UpdateAttemptRecord>, PersistenceError> {
+        self.ensure_layout()?;
+        let mut records = read_json_dir::<UpdateAttemptRecord>(&self.root.join("update-attempts"))?;
+        records.sort_by(|left, right| {
+            right
+                .started_at
+                .cmp(&left.started_at)
+                .then_with(|| left.update_id.cmp(&right.update_id))
+        });
+        Ok(records)
+    }
+
+    fn list_audit_events(&self) -> Result<Vec<AuditEvent>, PersistenceError> {
+        self.ensure_layout()?;
+
+        let path = self.audit_log_path();
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(PersistenceError::OpenFile {
+                    path: path.display().to_string(),
+                    source,
+                });
+            }
+        };
+
+        let mut events: Vec<AuditEvent> = Vec::new();
+        for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+            events.push(serde_json::from_str(line).map_err(PersistenceError::Serialize)?);
+        }
+
+        events.sort_by(|left, right| {
+            left.occurred_at
+                .cmp(&right.occurred_at)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+
+        Ok(events)
     }
 
     fn append_audit_event(&self, event: &AuditEvent) -> Result<(), PersistenceError> {
@@ -247,6 +310,47 @@ where
     }
 }
 
+fn read_json_dir<T>(path: &Path) -> Result<Vec<T>, PersistenceError>
+where
+    T: DeserializeOwned,
+{
+    let mut entries = Vec::new();
+    let read_dir = fs::read_dir(path).map_err(|source| PersistenceError::OpenFile {
+        path: path.display().to_string(),
+        source,
+    })?;
+
+    for entry in read_dir {
+        let entry = entry.map_err(|source| PersistenceError::OpenFile {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|source| PersistenceError::OpenFile {
+                path: entry.path().display().to_string(),
+                source,
+            })?;
+
+        if file_type.is_file() {
+            entries.push(entry.path());
+        }
+    }
+
+    entries.sort();
+
+    let mut values = Vec::with_capacity(entries.len());
+    for entry_path in entries {
+        let bytes = fs::read(&entry_path).map_err(|source| PersistenceError::OpenFile {
+            path: entry_path.display().to_string(),
+            source,
+        })?;
+        values.push(serde_json::from_slice(&bytes).map_err(PersistenceError::Serialize)?);
+    }
+
+    Ok(values)
+}
+
 fn sanitize_path_component(value: &str) -> String {
     value
         .chars()
@@ -280,4 +384,142 @@ pub enum PersistenceError {
     },
     #[error("failed to serialize persistent state: {0}")]
     Serialize(#[from] serde_json::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::{FilesystemStore, StateStore};
+    use crate::domain::{
+        AuditEvent, AuditEventKind, RuntimeModeKind, ServiceStateRecord, UpdateAttemptRecord,
+    };
+
+    #[test]
+    fn lists_service_states_in_service_name_order() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FilesystemStore::new(temp_dir.path());
+
+        store
+            .save_service_state(&ServiceStateRecord::new(
+                "frontend".into(),
+                None,
+                "example/frontend:2.0.0".into(),
+                None,
+                None,
+                parse_time("2026-03-17T12:00:00Z"),
+            ))
+            .expect("save state");
+        store
+            .save_service_state(&ServiceStateRecord::new(
+                "backend".into(),
+                None,
+                "example/backend:2.0.0".into(),
+                None,
+                None,
+                parse_time("2026-03-17T11:00:00Z"),
+            ))
+            .expect("save state");
+
+        let states = store.list_service_states().expect("list states");
+        let names = states
+            .into_iter()
+            .map(|record| record.service_name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["backend", "frontend"]);
+    }
+
+    #[test]
+    fn lists_update_attempts_newest_first_and_loads_one_by_id() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FilesystemStore::new(temp_dir.path());
+        let older_id = Uuid::new_v4();
+        let newer_id = Uuid::new_v4();
+
+        store
+            .save_update_attempt(&UpdateAttemptRecord::new(
+                older_id,
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                "frontend".into(),
+                RuntimeModeKind::Docker,
+                "example/frontend:1.0.0".into(),
+                None,
+                None,
+                parse_time("2026-03-17T10:00:00Z"),
+            ))
+            .expect("save older attempt");
+        store
+            .save_update_attempt(&UpdateAttemptRecord::new(
+                newer_id,
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                "frontend".into(),
+                RuntimeModeKind::Docker,
+                "example/frontend:2.0.0".into(),
+                None,
+                None,
+                parse_time("2026-03-17T11:00:00Z"),
+            ))
+            .expect("save newer attempt");
+
+        let attempts = store.list_update_attempts().expect("list attempts");
+        let ids = attempts
+            .iter()
+            .map(|record| record.update_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![newer_id, older_id]);
+        assert_eq!(
+            store
+                .load_update_attempt(newer_id)
+                .expect("load attempt")
+                .expect("attempt should exist")
+                .target_image_reference,
+            "example/frontend:2.0.0"
+        );
+    }
+
+    #[test]
+    fn lists_audit_events_in_time_order() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FilesystemStore::new(temp_dir.path());
+        let attempt_id = Uuid::new_v4();
+
+        store
+            .append_audit_event(&AuditEvent {
+                event_id: Uuid::from_str("00000000-0000-0000-0000-000000000002").expect("uuid"),
+                attempt_id,
+                occurred_at: parse_time("2026-03-17T11:00:00Z"),
+                kind: AuditEventKind::UpdateCommitted,
+                message: "second".into(),
+            })
+            .expect("append event");
+        store
+            .append_audit_event(&AuditEvent {
+                event_id: Uuid::from_str("00000000-0000-0000-0000-000000000001").expect("uuid"),
+                attempt_id,
+                occurred_at: parse_time("2026-03-17T10:00:00Z"),
+                kind: AuditEventKind::ValidationStarted,
+                message: "first".into(),
+            })
+            .expect("append event");
+
+        let events = store.list_audit_events().expect("list events");
+        let messages = events
+            .into_iter()
+            .map(|event| event.message)
+            .collect::<Vec<_>>();
+
+        assert_eq!(messages, vec!["first", "second"]);
+    }
+
+    fn parse_time(value: &str) -> OffsetDateTime {
+        OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+            .expect("valid timestamp")
+    }
 }
