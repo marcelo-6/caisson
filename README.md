@@ -86,7 +86,15 @@ The first release is focused on getting the baseline workflow working:
 ## Current CLI
 
 ```bash
-cargo run -- validate path/to/update.edgepkg --services path/to/services.toml --state-dir .caisson-state
+cargo run -- service list --services path/to/services.toml --state-dir .caisson-state
+```
+
+That command shows the predefined services from `services.toml` together with the locally known image state and the last recorded update result.
+
+Validate a package without changing anything:
+
+```bash
+cargo run -- package validate path/to/update.edgepkg --services path/to/services.toml --state-dir .caisson-state
 ```
 
 That command:
@@ -97,23 +105,61 @@ That command:
 - checks target service compatibility against `services.toml`
 - persists validation records and audit events under the chosen state directory
 
-ocker image import:
+Load a package:
 
 ```bash
-cargo run -- import-image path/to/update.edgepkg --services path/to/services.toml --state-dir .caisson-state
+cargo run -- package load path/to/update.edgepkg --services path/to/services.toml --state-dir .caisson-state
 ```
 
-That command validates the package first, then loads the staged `image.tar` into the local Docker daemon, inspects the imported image, and persists both the import record and the candidate release metadata.
+That command validates the package first, asks for confirmation, imports the staged `image.tar` into Docker, applies the update to the target service, runs health checks, and rolls back automatically if the update does not stay healthy.
 
-Quick way to build a local package for manual import testing is:
+If you want the same flow without the confirmation prompt:
+
+```bash
+cargo run -- package load path/to/update.edgepkg --yes --services path/to/services.toml --state-dir .caisson-state
+```
+
+To inspect local update history after a run:
+
+```bash
+cargo run -- history list --state-dir .caisson-state
+cargo run -- history show <update-id> --state-dir .caisson-state
+```
+
+Quick way to build a local package for manual testing is:
 
 ```bash
 tmpdir=$(mktemp -d)
-docker pull hello-world:latest
-docker tag hello-world:latest example/frontend:1.2.3
+docker pull alpine:3.19
+docker pull alpine:3.20
+docker tag alpine:3.19 example/frontend:current
+docker tag alpine:3.20 example/frontend:1.2.3
 docker save example/frontend:1.2.3 -o "$tmpdir/image.tar"
 cp tests/fixtures/manifests/valid-frontend.toml "$tmpdir/manifest.toml"
 tar -cf "$tmpdir/frontend.edgepkg" -C "$tmpdir" manifest.toml image.tar
+```
+
+If you want to test the full `package load` path, start the managed service first so there is something to replace:
+
+```bash
+docker rm -f frontend 2>/dev/null || true
+docker run -d --name frontend example/frontend:current sh -c 'sleep infinity'
+```
+
+Then run:
+
+```bash
+cargo run -- package load "$tmpdir/frontend.edgepkg" \
+  --services tests/fixtures/services.valid.toml \
+  --state-dir "$tmpdir/state"
+```
+
+`hello-world` is still fine for the earlier image-import smoke test, but it exits immediately, so it is not a good fit for the full apply + health check.
+
+For a one-shot local smoke test, run:
+
+```bash
+./scripts/docker-test.sh
 ```
 
 Test fixtures live under `tests/fixtures/`.
