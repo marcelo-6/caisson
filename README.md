@@ -4,7 +4,7 @@
 
 <h4>Offline Docker service updater for airgapped edge devices.</h4>
 
-<a href="https://github.com/marcelo-6/caisson/relseases"><img src="https://img.shields.io/github/v/release/marcelo-6/caisson?logo=github" alt="GitHub Release"></a>
+<a href="https://github.com/marcelo-6/caisson/releases"><img src="https://img.shields.io/github/v/release/marcelo-6/caisson?logo=github" alt="GitHub Release"></a>
 <a href="https://crates.io/crates/caisson/"><img src="https://img.shields.io/crates/v/caisson?logo=Rust" alt="Crate Release"></a>
 <a href="https://codecov.io/gh/marcelo-6/caisson"><img src="https://codecov.io/gh/marcelo-6/caisson/graph/badge.svg?token=TPJMXTJ5ZQ&amp;logo=Codecov&amp;logoColor=white" alt="Coverage"></a>
 <br>
