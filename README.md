@@ -22,7 +22,7 @@
 ## Status
 
 > [!NOTE]
-> This project is in early alpha and not ready for production use.
+> This project is in early development and not ready for production use.
 
 The goal of `Caisson` is to provide an update workflow for predefined Docker services on air-gapped or offline devices. In `0.1.0`, operators should only need to point the CLI at a local package file and apply the update. The backend handles validation, image import, service restart, health checks, rollback, and local audit history.
 
