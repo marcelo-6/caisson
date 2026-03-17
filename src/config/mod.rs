@@ -9,8 +9,8 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::domain::{
-    ComposeRuntime, DockerRuntime, ManagedService, RuntimeMode, SUPPORTED_SERVICE_CATALOG_VERSION,
-    ServiceCatalog,
+    ComposeRuntime, DockerRuntime, HealthCheckKind, HealthCheckSpec, ManagedService,
+    RollbackPolicy, RuntimeMode, SUPPORTED_SERVICE_CATALOG_VERSION, ServiceCatalog,
 };
 
 /// Errors produced while loading `services.toml`.
@@ -53,6 +53,8 @@ struct RawService {
     runtime_mode: RawRuntimeMode,
     docker: Option<RawDockerRuntime>,
     compose: Option<RawComposeRuntime>,
+    health_check: Option<RawHealthCheck>,
+    rollback: Option<RawRollbackPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,6 +68,18 @@ struct RawComposeRuntime {
     project: String,
     file: std::path::PathBuf,
     service: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawHealthCheck {
+    kind: Option<HealthCheckKind>,
+    timeout_secs: Option<u64>,
+    poll_interval_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRollbackPolicy {
+    automatic: Option<bool>,
 }
 
 /// Loads and validates a `services.toml` file into the domain model.
@@ -167,11 +181,16 @@ fn validate_catalog(raw: RawCatalog) -> Result<ServiceCatalog, ConfigError> {
             }
         };
 
+        let health_check = build_health_check(&name, service.health_check)?;
+        let rollback = build_rollback_policy(&name, service.rollback)?;
+
         services.push(ManagedService {
             name,
             service_revision,
             platform,
             runtime,
+            health_check,
+            rollback,
         });
     }
 
@@ -187,6 +206,51 @@ fn require_non_empty(field: &str, value: String) -> Result<String, ConfigError> 
     }
 
     Ok(value)
+}
+
+fn build_health_check(
+    service_name: &str,
+    raw: Option<RawHealthCheck>,
+) -> Result<HealthCheckSpec, ConfigError> {
+    let default = HealthCheckSpec::default();
+
+    let spec = match raw {
+        Some(raw) => HealthCheckSpec {
+            kind: raw.kind.unwrap_or(default.kind),
+            timeout_secs: raw.timeout_secs.unwrap_or(default.timeout_secs),
+            poll_interval_secs: raw.poll_interval_secs.unwrap_or(default.poll_interval_secs),
+        },
+        None => default,
+    };
+
+    if spec.timeout_secs == 0 {
+        return Err(ConfigError::Validation(format!(
+            "service `{service_name}` health_check.timeout_secs must be greater than zero"
+        )));
+    }
+
+    if spec.poll_interval_secs == 0 {
+        return Err(ConfigError::Validation(format!(
+            "service `{service_name}` health_check.poll_interval_secs must be greater than zero"
+        )));
+    }
+
+    Ok(spec)
+}
+
+fn build_rollback_policy(
+    service_name: &str,
+    raw: Option<RawRollbackPolicy>,
+) -> Result<RollbackPolicy, ConfigError> {
+    let automatic = raw.and_then(|policy| policy.automatic).unwrap_or(true);
+
+    if !automatic {
+        return Err(ConfigError::Validation(format!(
+            "service `{service_name}` cannot disable automatic rollback in 0.1.0"
+        )));
+    }
+
+    Ok(RollbackPolicy { automatic })
 }
 
 #[cfg(test)]
@@ -229,6 +293,41 @@ image_reference = "example/frontend:v2"
         let error = load_service_catalog(&path).expect_err("catalog should fail");
         assert!(
             error.to_string().contains("duplicate service name"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_disabled_automatic_rollback() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let path = temp_dir.path().join("services.toml");
+
+        std::fs::write(
+            &path,
+            r#"
+catalog_version = 1
+
+[[services]]
+name = "frontend"
+service_revision = "frontend-v1"
+platform = "linux/amd64"
+runtime_mode = "docker"
+
+[services.docker]
+container_name = "frontend"
+image_reference = "example/frontend:current"
+
+[services.rollback]
+automatic = false
+"#,
+        )
+        .expect("write catalog");
+
+        let error = load_service_catalog(&path).expect_err("catalog should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot disable automatic rollback"),
             "unexpected error: {error}"
         );
     }
