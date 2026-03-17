@@ -25,6 +25,8 @@ pub struct ManagedService {
     pub service_revision: String,
     pub platform: String,
     pub runtime: RuntimeMode,
+    pub health_check: HealthCheckSpec,
+    pub rollback: RollbackPolicy,
 }
 
 /// The supported runtime modes for predefined services.
@@ -33,6 +35,25 @@ pub struct ManagedService {
 pub enum RuntimeMode {
     Docker(DockerRuntime),
     Compose(ComposeRuntime),
+}
+
+impl RuntimeMode {
+    /// Returns the friendly runtime kind for this service.
+    #[must_use]
+    pub const fn kind(&self) -> RuntimeModeKind {
+        match self {
+            Self::Docker(_) => RuntimeModeKind::Docker,
+            Self::Compose(_) => RuntimeModeKind::Compose,
+        }
+    }
+}
+
+/// The coarse runtime kind used in update records.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeModeKind {
+    Docker,
+    Compose,
 }
 
 /// Runtime details for a Docker service.
@@ -48,6 +69,46 @@ pub struct ComposeRuntime {
     pub project: String,
     pub file: PathBuf,
     pub service: String,
+}
+
+/// Health-check settings for a managed service.
+///
+/// This is intentionally small for `0.1.0`.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct HealthCheckSpec {
+    pub kind: HealthCheckKind,
+    pub timeout_secs: u64,
+    pub poll_interval_secs: u64,
+}
+
+impl Default for HealthCheckSpec {
+    fn default() -> Self {
+        Self {
+            kind: HealthCheckKind::Running,
+            timeout_secs: 30,
+            poll_interval_secs: 1,
+        }
+    }
+}
+
+/// The supported health-check modes for `0.1.0`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthCheckKind {
+    Running,
+    ContainerHealth,
+}
+
+/// Rollback settings for a managed service.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct RollbackPolicy {
+    pub automatic: bool,
+}
+
+impl Default for RollbackPolicy {
+    fn default() -> Self {
+        Self { automatic: true }
+    }
 }
 
 /// The full predefined service catalog.
@@ -170,6 +231,28 @@ pub enum ValidationStatus {
 pub enum ImageImportStatus {
     Imported,
     Failed,
+}
+
+/// Final status for a service update attempt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateAttemptStatus {
+    Applying,
+    HealthChecking,
+    Succeeded,
+    Failed,
+    RollbackStarted,
+    RolledBack,
+    RollbackFailed,
+}
+
+/// Result of a health check run.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthCheckOutcome {
+    Passed,
+    Failed,
+    TimedOut,
 }
 
 /// A single actionable validation or import issue.
@@ -342,6 +425,145 @@ impl CandidateReleaseRecord {
     }
 }
 
+/// The last known local state for one managed service.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ServiceStateRecord {
+    pub service_name: String,
+    pub active_candidate_release_id: Option<Uuid>,
+    pub active_image_reference: String,
+    pub previous_known_good_candidate_release_id: Option<Uuid>,
+    pub previous_known_good_image_reference: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+impl ServiceStateRecord {
+    /// Builds a state record for a service after an update settles.
+    #[must_use]
+    pub fn new(
+        service_name: String,
+        active_candidate_release_id: Option<Uuid>,
+        active_image_reference: String,
+        previous_known_good_candidate_release_id: Option<Uuid>,
+        previous_known_good_image_reference: Option<String>,
+        updated_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            service_name,
+            active_candidate_release_id,
+            active_image_reference,
+            previous_known_good_candidate_release_id,
+            previous_known_good_image_reference,
+            updated_at,
+        }
+    }
+}
+
+/// The health-check result captured during one update attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct HealthCheckReport {
+    pub kind: HealthCheckKind,
+    pub outcome: HealthCheckOutcome,
+    pub message: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub checked_at: OffsetDateTime,
+}
+
+/// The persisted story of one service update attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct UpdateAttemptRecord {
+    pub update_id: Uuid,
+    pub candidate_release_id: Uuid,
+    pub validation_attempt_id: Uuid,
+    pub service_name: String,
+    pub runtime_mode: RuntimeModeKind,
+    pub target_image_reference: String,
+    pub previous_candidate_release_id: Option<Uuid>,
+    pub previous_image_reference: Option<String>,
+    pub rollback_container_name: Option<String>,
+    pub status: UpdateAttemptStatus,
+    #[serde(with = "time::serde::rfc3339")]
+    pub started_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
+    pub health_check: Option<HealthCheckReport>,
+    pub issues: Vec<ValidationIssue>,
+}
+
+impl UpdateAttemptRecord {
+    /// Builds a fresh update attempt.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        update_id: Uuid,
+        candidate_release_id: Uuid,
+        validation_attempt_id: Uuid,
+        service_name: String,
+        runtime_mode: RuntimeModeKind,
+        target_image_reference: String,
+        previous_candidate_release_id: Option<Uuid>,
+        previous_image_reference: Option<String>,
+        started_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            update_id,
+            candidate_release_id,
+            validation_attempt_id,
+            service_name,
+            runtime_mode,
+            target_image_reference,
+            previous_candidate_release_id,
+            previous_image_reference,
+            rollback_container_name: None,
+            status: UpdateAttemptStatus::Applying,
+            started_at,
+            finished_at: None,
+            health_check: None,
+            issues: Vec::new(),
+        }
+    }
+
+    /// Adds an issue without changing the current status.
+    pub fn add_issue(&mut self, issue: ValidationIssue) {
+        self.issues.push(issue);
+    }
+
+    /// Marks the attempt as running health checks.
+    pub fn mark_health_checking(&mut self) {
+        self.status = UpdateAttemptStatus::HealthChecking;
+    }
+
+    /// Marks the attempt as cleanly committed.
+    pub fn mark_succeeded(&mut self, finished_at: OffsetDateTime) {
+        self.status = UpdateAttemptStatus::Succeeded;
+        self.finished_at = Some(finished_at);
+    }
+
+    /// Marks the attempt as failed before rollback finished.
+    pub fn mark_failed(&mut self, finished_at: OffsetDateTime) {
+        self.status = UpdateAttemptStatus::Failed;
+        self.finished_at = Some(finished_at);
+    }
+
+    /// Marks the attempt as entering rollback.
+    pub fn mark_rollback_started(&mut self) {
+        self.status = UpdateAttemptStatus::RollbackStarted;
+        self.finished_at = None;
+    }
+
+    /// Marks the attempt as rolled back successfully.
+    pub fn mark_rolled_back(&mut self, finished_at: OffsetDateTime) {
+        self.status = UpdateAttemptStatus::RolledBack;
+        self.finished_at = Some(finished_at);
+    }
+
+    /// Marks the attempt as rollback-failed.
+    pub fn mark_rollback_failed(&mut self, finished_at: OffsetDateTime) {
+        self.status = UpdateAttemptStatus::RollbackFailed;
+        self.finished_at = Some(finished_at);
+    }
+}
+
 /// A local audit event emitted during package validation or image import.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct AuditEvent {
@@ -363,4 +585,12 @@ pub enum AuditEventKind {
     ImageImportStarted,
     ImageImportSucceeded,
     ImageImportFailed,
+    UpdateStarted,
+    HealthCheckStarted,
+    HealthCheckPassed,
+    HealthCheckFailed,
+    RollbackStarted,
+    RollbackSucceeded,
+    RollbackFailed,
+    UpdateCommitted,
 }

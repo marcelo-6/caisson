@@ -4,12 +4,20 @@
 //! through `bollard`, a fake client in tests, or some other implementation
 //! detail.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use bollard::Docker;
 use bollard::body_full;
+use bollard::models::{
+    ContainerCreateBody, ContainerInspectResponse, HealthStatusEnum, NetworkingConfig,
+};
 use bollard::query_parameters::ImportImageOptionsBuilder;
+use bollard::query_parameters::{
+    CreateContainerOptionsBuilder, InspectContainerOptionsBuilder, ListContainersOptionsBuilder,
+    RemoveContainerOptionsBuilder, RenameContainerOptionsBuilder, StopContainerOptionsBuilder,
+};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use thiserror::Error;
@@ -30,6 +38,52 @@ pub trait DockerImageClient: std::fmt::Debug {
         &self,
         image_reference: &str,
     ) -> Result<ImportedImageMetadata, DockerClientError>;
+}
+
+/// Normalized view of a container for update and health logic.
+#[derive(Debug, Clone)]
+pub struct ObservedContainer {
+    pub container_id: String,
+    pub name: String,
+    pub image_reference: Option<String>,
+    pub labels: HashMap<String, String>,
+    pub running: bool,
+    pub health: Option<ContainerHealthState>,
+    pub create_body: ContainerCreateBody,
+}
+
+/// Narrow health states used by the updater.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ContainerHealthState {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+/// Docker operations used by the service update workflow.
+pub trait DockerServiceClient: std::fmt::Debug {
+    fn inspect_container(
+        &self,
+        container_name: &str,
+    ) -> Result<ObservedContainer, DockerClientError>;
+    fn stop_container(&self, container_name: &str) -> Result<(), DockerClientError>;
+    fn rename_container(
+        &self,
+        container_name: &str,
+        new_name: &str,
+    ) -> Result<(), DockerClientError>;
+    fn create_container_from(
+        &self,
+        container_name: &str,
+        source: &ObservedContainer,
+        image_reference: &str,
+    ) -> Result<(), DockerClientError>;
+    fn start_container(&self, container_name: &str) -> Result<(), DockerClientError>;
+    fn remove_container(&self, container_name: &str, force: bool) -> Result<(), DockerClientError>;
+    fn list_container_ids_by_labels(
+        &self,
+        labels: &[(&str, &str)],
+    ) -> Result<Vec<String>, DockerClientError>;
 }
 
 /// `bollard` Docker image client for the local daemon.
@@ -103,6 +157,223 @@ impl DockerImageClient for BollardDockerClient {
             })
         })
     }
+}
+
+impl DockerServiceClient for BollardDockerClient {
+    fn inspect_container(
+        &self,
+        container_name: &str,
+    ) -> Result<ObservedContainer, DockerClientError> {
+        self.runtime.block_on(async {
+            let details = self
+                .docker
+                .inspect_container(
+                    container_name,
+                    Some(
+                        InspectContainerOptionsBuilder::default()
+                            .size(false)
+                            .build(),
+                    ),
+                )
+                .await
+                .map_err(DockerClientError::Api)?;
+
+            observed_container_from_inspect(details)
+        })
+    }
+
+    fn stop_container(&self, container_name: &str) -> Result<(), DockerClientError> {
+        self.runtime.block_on(async {
+            self.docker
+                .stop_container(
+                    container_name,
+                    Some(StopContainerOptionsBuilder::default().t(10).build()),
+                )
+                .await
+                .map_err(DockerClientError::Api)
+        })
+    }
+
+    fn rename_container(
+        &self,
+        container_name: &str,
+        new_name: &str,
+    ) -> Result<(), DockerClientError> {
+        self.runtime.block_on(async {
+            self.docker
+                .rename_container(
+                    container_name,
+                    RenameContainerOptionsBuilder::default()
+                        .name(new_name)
+                        .build(),
+                )
+                .await
+                .map_err(DockerClientError::Api)
+        })
+    }
+
+    fn create_container_from(
+        &self,
+        container_name: &str,
+        source: &ObservedContainer,
+        image_reference: &str,
+    ) -> Result<(), DockerClientError> {
+        let mut body = source.create_body.clone();
+        body.image = Some(image_reference.to_string());
+
+        self.runtime.block_on(async {
+            self.docker
+                .create_container(
+                    Some(
+                        CreateContainerOptionsBuilder::default()
+                            .name(container_name)
+                            .build(),
+                    ),
+                    body,
+                )
+                .await
+                .map(|_| ())
+                .map_err(DockerClientError::Api)
+        })
+    }
+
+    fn start_container(&self, container_name: &str) -> Result<(), DockerClientError> {
+        self.runtime.block_on(async {
+            self.docker
+                .start_container(
+                    container_name,
+                    None::<bollard::query_parameters::StartContainerOptions>,
+                )
+                .await
+                .map_err(DockerClientError::Api)
+        })
+    }
+
+    fn remove_container(&self, container_name: &str, force: bool) -> Result<(), DockerClientError> {
+        self.runtime.block_on(async {
+            self.docker
+                .remove_container(
+                    container_name,
+                    Some(
+                        RemoveContainerOptionsBuilder::default()
+                            .force(force)
+                            .build(),
+                    ),
+                )
+                .await
+                .map_err(DockerClientError::Api)
+        })
+    }
+
+    fn list_container_ids_by_labels(
+        &self,
+        labels: &[(&str, &str)],
+    ) -> Result<Vec<String>, DockerClientError> {
+        let mut filters = HashMap::new();
+        filters.insert(
+            "label".to_string(),
+            labels
+                .iter()
+                .map(|(key, value)| format!("{key}={value}"))
+                .collect::<Vec<_>>(),
+        );
+
+        self.runtime.block_on(async {
+            self.docker
+                .list_containers(Some(
+                    ListContainersOptionsBuilder::default()
+                        .all(true)
+                        .filters(&filters)
+                        .build(),
+                ))
+                .await
+                .map_err(DockerClientError::Api)
+                .map(|containers| {
+                    containers
+                        .into_iter()
+                        .filter_map(|container| container.id)
+                        .collect()
+                })
+        })
+    }
+}
+
+fn observed_container_from_inspect(
+    details: ContainerInspectResponse,
+) -> Result<ObservedContainer, DockerClientError> {
+    let create_body = create_body_from_inspect(&details)?;
+    let state = details.state.as_ref();
+    let running = state.and_then(|state| state.running).unwrap_or(false);
+    let health = state
+        .and_then(|state| state.health.as_ref())
+        .and_then(|health| match health.status {
+            Some(HealthStatusEnum::STARTING) => Some(ContainerHealthState::Starting),
+            Some(HealthStatusEnum::HEALTHY) => Some(ContainerHealthState::Healthy),
+            Some(HealthStatusEnum::UNHEALTHY) => Some(ContainerHealthState::Unhealthy),
+            _ => None,
+        });
+    let labels = create_body.labels.clone().unwrap_or_default();
+
+    Ok(ObservedContainer {
+        container_id: details.id.unwrap_or_default(),
+        name: details
+            .name
+            .unwrap_or_default()
+            .trim_start_matches('/')
+            .to_string(),
+        image_reference: create_body.image.clone(),
+        labels,
+        running,
+        health,
+        create_body,
+    })
+}
+
+fn create_body_from_inspect(
+    details: &ContainerInspectResponse,
+) -> Result<ContainerCreateBody, DockerClientError> {
+    let config = details.config.clone().ok_or_else(|| {
+        DockerClientError::InvalidContainerConfig(
+            "inspected container is missing its creation config".into(),
+        )
+    })?;
+
+    let networking_config = details
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.networks.clone())
+        .map(|endpoints_config| NetworkingConfig {
+            endpoints_config: Some(endpoints_config),
+        });
+
+    Ok(ContainerCreateBody {
+        hostname: config.hostname,
+        domainname: config.domainname,
+        user: config.user,
+        attach_stdin: config.attach_stdin,
+        attach_stdout: config.attach_stdout,
+        attach_stderr: config.attach_stderr,
+        exposed_ports: config.exposed_ports,
+        tty: config.tty,
+        open_stdin: config.open_stdin,
+        stdin_once: config.stdin_once,
+        env: config.env,
+        cmd: config.cmd,
+        healthcheck: config.healthcheck,
+        args_escaped: config.args_escaped,
+        image: config.image,
+        volumes: config.volumes,
+        working_dir: config.working_dir,
+        entrypoint: config.entrypoint,
+        network_disabled: config.network_disabled,
+        on_build: config.on_build,
+        labels: config.labels,
+        stop_signal: config.stop_signal,
+        stop_timeout: config.stop_timeout,
+        shell: config.shell,
+        host_config: details.host_config.clone(),
+        networking_config,
+    })
 }
 
 /// Backend service that imports staged package images into Docker.
@@ -260,6 +531,8 @@ pub enum DockerClientError {
     Connect(bollard::errors::Error),
     #[error("failed to create Tokio runtime for Docker operations: {0}")]
     Runtime(std::io::Error),
+    #[error("inspected container could not be reused: {0}")]
+    InvalidContainerConfig(String),
     #[error("failed to open image archive `{path}`: {source}")]
     ArchiveIo {
         path: String,

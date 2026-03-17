@@ -7,11 +7,15 @@
 use std::path::{Path, PathBuf};
 
 use semver::Version;
+use uuid::Uuid;
 
+use crate::compose::{ComposeClient, ShellComposeClient};
+use crate::docker::DockerServiceClient;
 use crate::docker::{DockerImageClient, ImageImportError, ImageImportService};
-use crate::domain::{ImageImportRecord, ServiceCatalog, ValidationRecord};
+use crate::domain::{ImageImportRecord, ServiceCatalog, UpdateAttemptRecord, ValidationRecord};
 use crate::package::{PackageIntakeError, PackageIntakeService};
 use crate::persistence::{FilesystemStore, StateStore};
+use crate::update::{UpdateError, UpdateService};
 
 /// Input for the package-validation use case.
 #[derive(Debug, Clone)]
@@ -23,6 +27,12 @@ pub struct ValidatePackageRequest {
 #[derive(Debug, Clone)]
 pub struct ImportValidatedImageRequest {
     pub validation_record: ValidationRecord,
+}
+
+/// Input for the service-update use case.
+#[derive(Debug, Clone)]
+pub struct ApplyCandidateReleaseRequest {
+    pub candidate_release_id: Uuid,
 }
 
 /// Application facade used by the CLI and tests for package validation.
@@ -86,6 +96,24 @@ where
     }
 }
 
+/// Application facade used by the CLI and tests for service updates.
+#[derive(Debug)]
+pub struct UpdateApp<D, C, S> {
+    updates: UpdateService<D, C, S>,
+}
+
+impl<D> UpdateApp<D, ShellComposeClient, FilesystemStore>
+where
+    D: DockerServiceClient,
+{
+    /// Creates a filesystem-backed update app.
+    pub fn filesystem(catalog: ServiceCatalog, docker: D, store: FilesystemStore) -> Self {
+        Self {
+            updates: UpdateService::new(catalog, docker, ShellComposeClient, store),
+        }
+    }
+}
+
 impl<D, S> ImageImportApp<D, S>
 where
     D: DockerImageClient,
@@ -98,5 +126,28 @@ where
     ) -> Result<ImageImportRecord, ImageImportError> {
         self.image_import
             .import_validated_package(&request.validation_record)
+    }
+}
+
+impl<D, C, S> UpdateApp<D, C, S>
+where
+    D: DockerServiceClient,
+    C: ComposeClient,
+    S: StateStore,
+{
+    /// Creates an update app with explicit runtime dependencies.
+    pub fn new(catalog: ServiceCatalog, docker: D, compose: C, store: S) -> Self {
+        Self {
+            updates: UpdateService::new(catalog, docker, compose, store),
+        }
+    }
+
+    /// Applies a persisted candidate release to its target service.
+    pub fn apply_candidate_release(
+        &self,
+        request: ApplyCandidateReleaseRequest,
+    ) -> Result<UpdateAttemptRecord, UpdateError> {
+        self.updates
+            .apply_candidate_release(request.candidate_release_id)
     }
 }
