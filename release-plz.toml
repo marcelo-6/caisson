@@ -1,6 +1,6 @@
 [workspace]
 allow_dirty = true # allow updating repositories with uncommitted changes
-changelog_update = false # disable changelog updates
+changelog_update = true # disable changelog updates
 dependencies_update = false # update dependencies with `cargo update`
 git_release_enable = true # disable GitHub/Gitea releases
 pr_branch_prefix = "release-plz-" # PR branch prefix
@@ -11,6 +11,10 @@ publish_timeout = "30m" # set a timeout for `cargo publish`
 # release_commits = "^feat:" # prepare release only if at least one commit matches a regex
 release_always = true
 repo_url = "https://github.com/marcelo-6/caisson"
+
+[[package]]
+name = "caisson"
+changelog_path = "CHANGELOG.md"
 
 [changelog]
 header = """
