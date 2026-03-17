@@ -1,4 +1,5 @@
-//! Filesystem persistence for validation records and audit events.
+//! Filesystem persistence for validation records, import records, and
+//! audit events.
 //!
 //! Might use sqlite later, not final yet.
 
@@ -10,11 +11,16 @@ use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::domain::{AuditEvent, ValidationRecord};
+use crate::domain::{AuditEvent, CandidateReleaseRecord, ImageImportRecord, ValidationRecord};
 
 /// Storage operations the application.
 pub trait StateStore {
     fn save_validation_record(&self, record: &ValidationRecord) -> Result<(), PersistenceError>;
+    fn save_image_import_record(&self, record: &ImageImportRecord) -> Result<(), PersistenceError>;
+    fn save_candidate_release(
+        &self,
+        record: &CandidateReleaseRecord,
+    ) -> Result<(), PersistenceError>;
     fn append_audit_event(&self, event: &AuditEvent) -> Result<(), PersistenceError>;
 }
 
@@ -51,6 +57,22 @@ impl FilesystemStore {
             .join(format!("{attempt_id}.json"))
     }
 
+    /// Returns the JSON path for a persisted image-import record.
+    #[must_use]
+    pub fn image_import_record_path(&self, import_id: Uuid) -> PathBuf {
+        self.root
+            .join("image-import-records")
+            .join(format!("{import_id}.json"))
+    }
+
+    /// Returns the JSON path for a persisted candidate release record.
+    #[must_use]
+    pub fn candidate_release_path(&self, candidate_release_id: Uuid) -> PathBuf {
+        self.root
+            .join("candidate-releases")
+            .join(format!("{candidate_release_id}.json"))
+    }
+
     fn audit_log_path(&self) -> PathBuf {
         self.root.join("audit").join("events.jsonl")
     }
@@ -60,6 +82,8 @@ impl FilesystemStore {
             self.root.clone(),
             self.root.join("staging"),
             self.root.join("validation-records"),
+            self.root.join("image-import-records"),
+            self.root.join("candidate-releases"),
             self.root.join("audit"),
         ] {
             fs::create_dir_all(&path).map_err(|source| PersistenceError::CreateDir {
@@ -75,9 +99,23 @@ impl FilesystemStore {
 impl StateStore for FilesystemStore {
     fn save_validation_record(&self, record: &ValidationRecord) -> Result<(), PersistenceError> {
         self.ensure_layout()?;
+        write_json_atomic(&self.validation_record_path(record.attempt_id), record)
+    }
 
-        let path = self.validation_record_path(record.attempt_id);
-        write_json_atomic(&path, record)
+    fn save_image_import_record(&self, record: &ImageImportRecord) -> Result<(), PersistenceError> {
+        self.ensure_layout()?;
+        write_json_atomic(&self.image_import_record_path(record.import_id), record)
+    }
+
+    fn save_candidate_release(
+        &self,
+        record: &CandidateReleaseRecord,
+    ) -> Result<(), PersistenceError> {
+        self.ensure_layout()?;
+        write_json_atomic(
+            &self.candidate_release_path(record.candidate_release_id),
+            record,
+        )
     }
 
     fn append_audit_event(&self, event: &AuditEvent) -> Result<(), PersistenceError> {
