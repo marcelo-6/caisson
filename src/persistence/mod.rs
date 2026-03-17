@@ -51,6 +51,14 @@ pub struct FilesystemStore {
     root: PathBuf,
 }
 
+/// Result from cleaning the local package workspace.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PackageCleanupResult {
+    pub workspace_root: PathBuf,
+    pub removed_entries: usize,
+    pub removed_root: bool,
+}
+
 impl FilesystemStore {
     /// Creates a store rooted at the provided directory.
     #[must_use]
@@ -68,6 +76,12 @@ impl FilesystemStore {
     #[must_use]
     pub fn staging_dir_for(&self, attempt_id: Uuid) -> PathBuf {
         self.root.join("staging").join(attempt_id.to_string())
+    }
+
+    /// Returns the root used for staged package workspaces.
+    #[must_use]
+    pub fn package_workspace_root(&self) -> PathBuf {
+        self.root.join("staging")
     }
 
     /// Returns the JSON path for a persisted validation record.
@@ -132,6 +146,47 @@ impl FilesystemStore {
         }
 
         Ok(())
+    }
+
+    /// Removes the local package workspace root if it exists.
+    pub fn cleanup_package_workspace(&self) -> Result<PackageCleanupResult, PersistenceError> {
+        let workspace_root = self.package_workspace_root();
+
+        match fs::read_dir(&workspace_root) {
+            Ok(read_dir) => {
+                let mut removed_entries = 0usize;
+                for entry in read_dir {
+                    entry.map_err(|source| PersistenceError::OpenFile {
+                        path: workspace_root.display().to_string(),
+                        source,
+                    })?;
+                    removed_entries += 1;
+                }
+                fs::remove_dir_all(&workspace_root).map_err(|source| {
+                    PersistenceError::WriteFile {
+                        path: workspace_root.display().to_string(),
+                        source,
+                    }
+                })?;
+
+                Ok(PackageCleanupResult {
+                    workspace_root,
+                    removed_entries,
+                    removed_root: true,
+                })
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                Ok(PackageCleanupResult {
+                    workspace_root,
+                    removed_entries: 0,
+                    removed_root: false,
+                })
+            }
+            Err(source) => Err(PersistenceError::OpenFile {
+                path: workspace_root.display().to_string(),
+                source,
+            }),
+        }
     }
 }
 
@@ -516,6 +571,45 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(messages, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn cleanup_package_workspace_is_a_noop_when_missing() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FilesystemStore::new(temp_dir.path());
+
+        let result = store
+            .cleanup_package_workspace()
+            .expect("cleanup should succeed");
+
+        assert!(!result.removed_root);
+        assert_eq!(result.removed_entries, 0);
+        assert!(!result.workspace_root.exists());
+    }
+
+    #[test]
+    fn cleanup_package_workspace_removes_only_staged_artifacts() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FilesystemStore::new(temp_dir.path());
+        let staging_one = store.staging_dir_for(Uuid::new_v4());
+        let staging_two = store.staging_dir_for(Uuid::new_v4());
+
+        std::fs::create_dir_all(&staging_one).expect("create staging one");
+        std::fs::create_dir_all(&staging_two).expect("create staging two");
+        std::fs::write(staging_one.join("package.edgepkg"), b"pkg one").expect("write package");
+        std::fs::write(staging_two.join("package.edgepkg"), b"pkg two").expect("write package");
+        std::fs::create_dir_all(temp_dir.path().join("audit")).expect("create audit");
+        std::fs::write(temp_dir.path().join("audit").join("events.jsonl"), b"{}\n")
+            .expect("write audit");
+
+        let result = store
+            .cleanup_package_workspace()
+            .expect("cleanup should succeed");
+
+        assert!(result.removed_root);
+        assert_eq!(result.removed_entries, 2);
+        assert!(!store.package_workspace_root().exists());
+        assert!(temp_dir.path().join("audit").join("events.jsonl").exists());
     }
 
     fn parse_time(value: &str) -> OffsetDateTime {
