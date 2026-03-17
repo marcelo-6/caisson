@@ -294,6 +294,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rollback_docker_service(
         &self,
         service: &ManagedService,
