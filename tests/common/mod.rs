@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
