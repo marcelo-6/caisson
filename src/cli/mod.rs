@@ -1054,6 +1054,77 @@ mod tests {
     }
 
     #[test]
+    fn package_load_stops_after_import_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let workflow = FakeWorkflow::new(
+            accepted_validation_record(temp_dir.path().join("frontend.edgepkg")),
+            failed_import_record(),
+            succeeded_update_record(),
+        );
+        let cli = parse_cli(vec![
+            "caisson".into(),
+            "--services".into(),
+            fixture_path("services.valid.toml"),
+            "--state-dir".into(),
+            temp_dir.path().display().to_string(),
+            "package".into(),
+            "load".into(),
+            "--yes".into(),
+            temp_dir
+                .path()
+                .join("frontend.edgepkg")
+                .display()
+                .to_string(),
+        ]);
+        let mut input = Cursor::new(Vec::new());
+        let mut output = Vec::new();
+
+        let exit_code = execute(cli, &workflow, &mut input, &mut output).expect("command");
+        let rendered = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(exit_code, ExitCode::from(4));
+        assert!(rendered.contains("Image import"));
+        assert!(rendered.contains("Status: failed"));
+        assert!(rendered.contains("docker tarball was rejected"));
+        assert_eq!(workflow.calls(), vec!["validate", "import"]);
+    }
+
+    #[test]
+    fn package_load_reports_rolled_back_result() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let workflow = FakeWorkflow::new(
+            accepted_validation_record(temp_dir.path().join("frontend.edgepkg")),
+            imported_image_record(),
+            rolled_back_update_record(),
+        );
+        let cli = parse_cli(vec![
+            "caisson".into(),
+            "--services".into(),
+            fixture_path("services.valid.toml"),
+            "--state-dir".into(),
+            temp_dir.path().display().to_string(),
+            "package".into(),
+            "load".into(),
+            "--yes".into(),
+            temp_dir
+                .path()
+                .join("frontend.edgepkg")
+                .display()
+                .to_string(),
+        ]);
+        let mut input = Cursor::new(Vec::new());
+        let mut output = Vec::new();
+
+        let exit_code = execute(cli, &workflow, &mut input, &mut output).expect("command");
+        let rendered = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(exit_code, ExitCode::from(4));
+        assert!(rendered.contains("Status: rolled back"));
+        assert!(rendered.contains("the update failed, so the service was moved back"));
+        assert_eq!(workflow.calls(), vec!["validate", "import", "apply"]);
+    }
+
+    #[test]
     fn package_validate_returns_rejected_exit_code_and_issues() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let workflow = FakeWorkflow::new(
@@ -1170,6 +1241,70 @@ mod tests {
         assert!(rendered.contains("Runtime: compose"));
         assert!(rendered.contains("Compose project: caisson-stack"));
         assert!(rendered.contains("Compose service: backend"));
+        assert!(workflow.calls().is_empty());
+    }
+
+    #[test]
+    fn history_list_applies_service_filter_and_limit() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FilesystemStore::new(temp_dir.path());
+        let mut frontend_attempt = UpdateAttemptRecord::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "frontend".into(),
+            RuntimeModeKind::Docker,
+            "example/frontend:1.2.3".into(),
+            None,
+            None,
+            parse_time("2026-03-17T12:00:00Z"),
+        );
+        frontend_attempt.mark_succeeded(parse_time("2026-03-17T12:01:00Z"));
+        store
+            .save_update_attempt(&frontend_attempt)
+            .expect("save frontend attempt");
+
+        let mut backend_attempt = UpdateAttemptRecord::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "backend".into(),
+            RuntimeModeKind::Compose,
+            "example/backend:2.0.0".into(),
+            None,
+            None,
+            parse_time("2026-03-17T11:00:00Z"),
+        );
+        backend_attempt.mark_failed(parse_time("2026-03-17T11:02:00Z"));
+        store
+            .save_update_attempt(&backend_attempt)
+            .expect("save backend attempt");
+
+        let cli = parse_cli(vec![
+            "caisson".into(),
+            "--state-dir".into(),
+            temp_dir.path().display().to_string(),
+            "history".into(),
+            "list".into(),
+            "--service".into(),
+            "frontend".into(),
+            "--limit".into(),
+            "1".into(),
+        ]);
+        let workflow = FakeWorkflow::new(
+            accepted_validation_record(temp_dir.path().join("frontend.edgepkg")),
+            imported_image_record(),
+            succeeded_update_record(),
+        );
+        let mut input = Cursor::new(Vec::new());
+        let mut output = Vec::new();
+
+        let exit_code = execute(cli, &workflow, &mut input, &mut output).expect("command");
+        let rendered = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(exit_code, ExitCode::SUCCESS);
+        assert!(rendered.contains("frontend"));
+        assert!(!rendered.contains("backend"));
         assert!(workflow.calls().is_empty());
     }
 
@@ -1359,6 +1494,22 @@ mod tests {
         record
     }
 
+    fn failed_import_record() -> ImageImportRecord {
+        let mut record = ImageImportRecord::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "frontend".into(),
+            "example/frontend:1.2.3".into(),
+            semver::Version::parse("1.2.3").expect("version"),
+            parse_time("2026-03-17T10:01:00Z"),
+        );
+        record.fail_with(ValidationIssue::new(
+            "docker.load_failed",
+            "docker tarball was rejected",
+        ));
+        record
+    }
+
     fn succeeded_update_record() -> UpdateAttemptRecord {
         let mut record = UpdateAttemptRecord::new(
             Uuid::new_v4(),
@@ -1378,6 +1529,32 @@ mod tests {
             checked_at: parse_time("2026-03-17T10:03:00Z"),
         });
         record.mark_succeeded(parse_time("2026-03-17T10:04:00Z"));
+        record
+    }
+
+    fn rolled_back_update_record() -> UpdateAttemptRecord {
+        let mut record = UpdateAttemptRecord::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "frontend".into(),
+            RuntimeModeKind::Docker,
+            "example/frontend:1.2.3".into(),
+            None,
+            Some("example/frontend:current".into()),
+            parse_time("2026-03-17T10:02:00Z"),
+        );
+        record.health_check = Some(HealthCheckReport {
+            kind: HealthCheckKind::Running,
+            outcome: HealthCheckOutcome::Failed,
+            message: "container exited during verification".into(),
+            checked_at: parse_time("2026-03-17T10:03:00Z"),
+        });
+        record.add_issue(ValidationIssue::new(
+            "health_check.failed",
+            "container exited during verification",
+        ));
+        record.mark_rolled_back(parse_time("2026-03-17T10:04:00Z"));
         record
     }
 
