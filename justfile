@@ -71,6 +71,11 @@ changelog-dry-run:
     echo "Project version {{version}} -> next ${next}"
     git-cliff --config cliff.toml --unreleased --tag "${next}" --tag-pattern '{{semver_tag_pattern}}'
 
+# dry run changelog generation (offline).
+[group('development')]
+changelog-dry-run-offline:
+    git-cliff --config cliff.toml --offline
+
 # show dependencies of this project
 [group('development')]
 dependencies:
