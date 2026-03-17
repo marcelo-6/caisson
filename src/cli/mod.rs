@@ -24,7 +24,7 @@ use crate::domain::{
     PackageManifest, RuntimeMode, ServiceCatalog, ServiceStateRecord, UpdateAttemptRecord,
     UpdateAttemptStatus, ValidationRecord, ValidationStatus,
 };
-use crate::persistence::{FilesystemStore, PersistenceError, StateStore};
+use crate::persistence::{FilesystemStore, PackageCleanupResult, PersistenceError, StateStore};
 use crate::update::UpdateError;
 
 /// Runs the CLI and hands back the exit code.
@@ -111,10 +111,9 @@ where
     R: BufRead,
     F: PackageWorkflow,
 {
-    let catalog = load_service_catalog(&services_path)?;
-
     match command {
         PackageCommands::Validate { package } => {
+            let catalog = load_service_catalog(&services_path)?;
             writeln!(output, "Validating package...")?;
             let record = workflow.validate_package(catalog, package, state_dir)?;
             write_validation_summary(output, &record)?;
@@ -125,6 +124,7 @@ where
             })
         }
         PackageCommands::Load { package, yes } => {
+            let catalog = load_service_catalog(&services_path)?;
             writeln!(output, "Validating package...")?;
             let validation_record =
                 workflow.validate_package(catalog.clone(), package, state_dir.clone())?;
@@ -168,6 +168,12 @@ where
             write_update_summary(output, &update_record)?;
 
             Ok(exit_code_for_update_status(update_record.status))
+        }
+        PackageCommands::Cleanup => {
+            let store = FilesystemStore::new(state_dir);
+            let result = store.cleanup_package_workspace()?;
+            write_package_cleanup_summary(output, &result)?;
+            Ok(ExitCode::SUCCESS)
         }
     }
 }
@@ -403,6 +409,33 @@ where
         "Summary: {}",
         update_summary_sentence(record.status)
     )?;
+
+    Ok(())
+}
+
+fn write_package_cleanup_summary<W>(
+    output: &mut W,
+    result: &PackageCleanupResult,
+) -> Result<(), CliError>
+where
+    W: Write,
+{
+    writeln!(output, "Package cleanup")?;
+
+    if result.removed_root {
+        writeln!(
+            output,
+            "Removed leftover package artifacts under {}",
+            result.workspace_root.display()
+        )?;
+        writeln!(
+            output,
+            "Removed workspace entries: {}",
+            result.removed_entries
+        )?;
+    } else {
+        writeln!(output, "No leftover package artifacts were found.")?;
+    }
 
     Ok(())
 }
@@ -824,6 +857,8 @@ enum PackageCommands {
         #[arg(long)]
         yes: bool,
     },
+    /// Remove leftover local package artifacts under the state directory.
+    Cleanup,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1207,6 +1242,68 @@ mod tests {
         assert!(rendered.contains("Status: succeeded"));
         assert!(rendered.contains("validation_accepted"));
         assert!(rendered.contains("update_started"));
+        assert!(workflow.calls().is_empty());
+    }
+
+    #[test]
+    fn package_cleanup_reports_when_nothing_is_present() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let cli = parse_cli(vec![
+            "caisson".into(),
+            "--state-dir".into(),
+            temp_dir.path().display().to_string(),
+            "package".into(),
+            "cleanup".into(),
+        ]);
+        let workflow = FakeWorkflow::new(
+            accepted_validation_record(temp_dir.path().join("frontend.edgepkg")),
+            imported_image_record(),
+            succeeded_update_record(),
+        );
+        let mut input = Cursor::new(Vec::new());
+        let mut output = Vec::new();
+
+        let exit_code = execute(cli, &workflow, &mut input, &mut output).expect("command");
+        let rendered = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(exit_code, ExitCode::SUCCESS);
+        assert!(rendered.contains("Package cleanup"));
+        assert!(rendered.contains("No leftover package artifacts were found."));
+        assert!(workflow.calls().is_empty());
+    }
+
+    #[test]
+    fn package_cleanup_removes_only_package_workspace_artifacts() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = FilesystemStore::new(temp_dir.path());
+        std::fs::create_dir_all(store.staging_dir_for(Uuid::new_v4())).expect("create staging");
+        std::fs::create_dir_all(store.staging_dir_for(Uuid::new_v4())).expect("create staging");
+        std::fs::create_dir_all(temp_dir.path().join("audit")).expect("create audit");
+        std::fs::write(temp_dir.path().join("audit").join("events.jsonl"), b"{}\n")
+            .expect("write audit");
+
+        let cli = parse_cli(vec![
+            "caisson".into(),
+            "--state-dir".into(),
+            temp_dir.path().display().to_string(),
+            "package".into(),
+            "cleanup".into(),
+        ]);
+        let workflow = FakeWorkflow::new(
+            accepted_validation_record(temp_dir.path().join("frontend.edgepkg")),
+            imported_image_record(),
+            succeeded_update_record(),
+        );
+        let mut input = Cursor::new(Vec::new());
+        let mut output = Vec::new();
+
+        let exit_code = execute(cli, &workflow, &mut input, &mut output).expect("command");
+        let rendered = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(exit_code, ExitCode::SUCCESS);
+        assert!(rendered.contains("Removed workspace entries: 2"));
+        assert!(!store.package_workspace_root().exists());
+        assert!(temp_dir.path().join("audit").join("events.jsonl").exists());
         assert!(workflow.calls().is_empty());
     }
 
