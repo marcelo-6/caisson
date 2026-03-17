@@ -1,13 +1,15 @@
-//! Application- ayer wrapper around the package intake workflow.
+//! Application layer wrappers around the package validation and image
+//! import workflows.
 //!
-//! This keeps the CLI from needing to know how validation, staging, and
+//! The CLI should not need to know how validation, staging, Docker import, and
 //! persistence are stitched together.
 
 use std::path::{Path, PathBuf};
 
 use semver::Version;
 
-use crate::domain::{ServiceCatalog, ValidationRecord};
+use crate::docker::{DockerImageClient, ImageImportError, ImageImportService};
+use crate::domain::{ImageImportRecord, ServiceCatalog, ValidationRecord};
 use crate::package::{PackageIntakeError, PackageIntakeService};
 use crate::persistence::{FilesystemStore, StateStore};
 
@@ -17,7 +19,13 @@ pub struct ValidatePackageRequest {
     pub package_path: PathBuf,
 }
 
-/// Small application facade used by the CLI and tests.
+/// Input for the Docker image-import use case.
+#[derive(Debug, Clone)]
+pub struct ImportValidatedImageRequest {
+    pub validation_record: ValidationRecord,
+}
+
+/// Application facade used by the CLI and tests for package validation.
 #[derive(Debug)]
 pub struct ValidationApp<S> {
     package_intake: PackageIntakeService<S>,
@@ -57,5 +65,38 @@ where
     #[must_use]
     pub fn staging_root(&self) -> &Path {
         &self.staging_root
+    }
+}
+
+/// Application facade used by the CLI and tests for Docker image import.
+#[derive(Debug)]
+pub struct ImageImportApp<D, S> {
+    image_import: ImageImportService<D, S>,
+}
+
+impl<D> ImageImportApp<D, FilesystemStore>
+where
+    D: DockerImageClient,
+{
+    /// Creates a filesystem-backed image-import app.
+    pub fn filesystem(docker: D, store: FilesystemStore) -> Self {
+        Self {
+            image_import: ImageImportService::new(docker, store),
+        }
+    }
+}
+
+impl<D, S> ImageImportApp<D, S>
+where
+    D: DockerImageClient,
+    S: StateStore,
+{
+    /// Imports a Docker image from a previously accepted validation record.
+    pub fn import_validated_image(
+        &self,
+        request: ImportValidatedImageRequest,
+    ) -> Result<ImageImportRecord, ImageImportError> {
+        self.image_import
+            .import_validated_package(&request.validation_record)
     }
 }

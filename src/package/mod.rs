@@ -1,15 +1,15 @@
 //! Package intake, staging, and validation.
 //!
-//! This module is deliberately conservative. A local package file is untrusted
-//! until every baseline check says otherwise.
+//! A local package file is untrusted until every baseline check says otherwise.
 
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use semver::Version;
 use serde::Deserialize;
 use tar::{Archive, EntryType};
+use tempfile::NamedTempFile;
 use thiserror::Error;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -139,6 +139,15 @@ pub enum PackageIntakeError {
     Staging(std::io::Error),
     #[error("failed to read staged archive: {0}")]
     ArchiveIo(std::io::Error),
+}
+
+/// Errors produced while accessing `image.tar` from a staged package.
+#[derive(Debug, Error)]
+pub enum ImageArchiveAccessError {
+    #[error("{0}")]
+    Issue(ValidationIssue),
+    #[error("failed to access staged package archive: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Debug)]
@@ -348,6 +357,64 @@ impl PackageArchiveInspector {
     }
 }
 
+/// Extracts `image.tar` from a staged `.edgepkg` into a temporary file.
+///
+/// This keeps the Docker import path focused on a single payload file without
+/// turning the package module into a general extraction API.
+pub fn extract_image_archive_to_temp_file(
+    staged_package_path: &Path,
+) -> Result<NamedTempFile, ImageArchiveAccessError> {
+    let file = File::open(staged_package_path)?;
+    let mut archive = Archive::new(file);
+
+    for entry in archive.entries()? {
+        let mut entry = entry.map_err(ImageArchiveAccessError::Io)?;
+        let entry_name = normalize_image_access_entry_path(&entry)?;
+        let entry_type = entry.header().entry_type();
+
+        if entry_type != EntryType::Regular {
+            return Err(ImageArchiveAccessError::Issue(ValidationIssue::new(
+                "archive.unsafe_entry_type",
+                format!(
+                    "archive entry `{entry_name}` uses unsupported tar entry type `{entry_type:?}`"
+                ),
+            )));
+        }
+
+        if entry_name != "image.tar" {
+            drain_entry(&mut entry)?;
+            continue;
+        }
+
+        let size = entry.header().size().map_err(|error| {
+            ImageArchiveAccessError::Issue(ValidationIssue::new(
+                "archive.invalid_entry_size",
+                format!("archive entry `image.tar` has an invalid size: {error}"),
+            ))
+        })?;
+        if size == 0 {
+            return Err(ImageArchiveAccessError::Issue(ValidationIssue::new(
+                "image.empty_archive",
+                "image.tar must not be empty",
+            )));
+        }
+
+        let mut temp_file = NamedTempFile::new().map_err(ImageArchiveAccessError::Io)?;
+        std::io::copy(&mut entry, &mut temp_file).map_err(ImageArchiveAccessError::Io)?;
+        temp_file
+            .as_file_mut()
+            .flush()
+            .map_err(ImageArchiveAccessError::Io)?;
+
+        return Ok(temp_file);
+    }
+
+    Err(ImageArchiveAccessError::Issue(ValidationIssue::new(
+        "archive.missing_image",
+        "archive is missing required entry `image.tar`",
+    )))
+}
+
 fn normalize_entry_path<R: Read>(
     entry: &tar::Entry<'_, R>,
 ) -> Result<String, ArchiveInspectionError> {
@@ -379,6 +446,46 @@ fn normalize_entry_path<R: Read>(
     match first {
         Component::Normal(component) => Ok(component.to_string_lossy().to_string()),
         _ => Err(ArchiveInspectionError::Issue(ValidationIssue::new(
+            "archive.invalid_entry_path",
+            format!(
+                "archive entry `{}` uses an unsupported path form",
+                path.display()
+            ),
+        ))),
+    }
+}
+
+fn normalize_image_access_entry_path<R: Read>(
+    entry: &tar::Entry<'_, R>,
+) -> Result<String, ImageArchiveAccessError> {
+    let path = entry.path().map_err(|error| {
+        ImageArchiveAccessError::Issue(ValidationIssue::new(
+            "archive.invalid_entry_path",
+            format!("archive entry has an invalid path: {error}"),
+        ))
+    })?;
+
+    let mut components = path.components();
+    let first = components.next().ok_or_else(|| {
+        ImageArchiveAccessError::Issue(ValidationIssue::new(
+            "archive.empty_entry_path",
+            "archive entry path cannot be empty",
+        ))
+    })?;
+
+    if components.next().is_some() {
+        return Err(ImageArchiveAccessError::Issue(ValidationIssue::new(
+            "archive.nested_entry",
+            format!(
+                "archive entry `{}` must live at the package root",
+                path.display()
+            ),
+        )));
+    }
+
+    match first {
+        Component::Normal(component) => Ok(component.to_string_lossy().to_string()),
+        _ => Err(ImageArchiveAccessError::Issue(ValidationIssue::new(
             "archive.invalid_entry_path",
             format!(
                 "archive entry `{}` uses an unsupported path form",

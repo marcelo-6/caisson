@@ -96,3 +96,24 @@ That command:
 - parses `manifest.toml`
 - checks target service compatibility against `services.toml`
 - persists validation records and audit events under the chosen state directory
+
+ocker image import:
+
+```bash
+cargo run -- import-image path/to/update.edgepkg --services path/to/services.toml --state-dir .caisson-state
+```
+
+That command validates the package first, then loads the staged `image.tar` into the local Docker daemon, inspects the imported image, and persists both the import record and the candidate release metadata.
+
+Quick way to build a local package for manual import testing is:
+
+```bash
+tmpdir=$(mktemp -d)
+docker pull hello-world:latest
+docker tag hello-world:latest example/frontend:1.2.3
+docker save example/frontend:1.2.3 -o "$tmpdir/image.tar"
+cp tests/fixtures/manifests/valid-frontend.toml "$tmpdir/manifest.toml"
+tar -cf "$tmpdir/frontend.edgepkg" -C "$tmpdir" manifest.toml image.tar
+```
+
+Test fixtures live under `tests/fixtures/`.

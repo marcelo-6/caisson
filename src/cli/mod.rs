@@ -8,9 +8,12 @@ use semver::Version;
 use thiserror::Error;
 
 use crate::UPDATER_VERSION;
-use crate::app::{ValidatePackageRequest, ValidationApp};
+use crate::app::{
+    ImageImportApp, ImportValidatedImageRequest, ValidatePackageRequest, ValidationApp,
+};
 use crate::config::{ConfigError, load_service_catalog};
-use crate::domain::{ValidationRecord, ValidationStatus};
+use crate::docker::{BollardDockerClient, DockerClientError, ImageImportError};
+use crate::domain::{ImageImportRecord, ImageImportStatus, ValidationRecord, ValidationStatus};
 use crate::persistence::FilesystemStore;
 
 /// Runs the CLI and returns the desired exit code.
@@ -23,25 +26,55 @@ pub fn run() -> Result<ExitCode, CliError> {
             services,
             state_dir,
         } => {
-            let catalog = load_service_catalog(&services)?;
-            let store = FilesystemStore::new(state_dir);
-            let updater_version =
-                Version::parse(UPDATER_VERSION).map_err(CliError::VersionParse)?;
-            let app = ValidationApp::filesystem(catalog, store, updater_version);
-            let record = app.validate_package(ValidatePackageRequest {
-                package_path: package,
-            })?;
+            let record = validate_package(package, services, state_dir)?;
+            print_validation_record(&record);
 
-            print_record(&record);
-
-            let exit_code = match record.status {
+            Ok(match record.status {
                 ValidationStatus::Accepted => ExitCode::SUCCESS,
                 ValidationStatus::Rejected => ExitCode::from(2),
-            };
+            })
+        }
+        Commands::ImportImage {
+            package,
+            services,
+            state_dir,
+        } => {
+            let state_dir_for_validation = state_dir.clone();
+            let validation_record = validate_package(package, services, state_dir_for_validation)?;
+            print_validation_record(&validation_record);
 
-            Ok(exit_code)
+            if validation_record.status == ValidationStatus::Rejected {
+                return Ok(ExitCode::from(2));
+            }
+
+            let docker = BollardDockerClient::connect_local_defaults()?;
+            let import_app = ImageImportApp::filesystem(docker, FilesystemStore::new(state_dir));
+            let import_record = import_app
+                .import_validated_image(ImportValidatedImageRequest { validation_record })?;
+            print_image_import_record(&import_record);
+
+            Ok(match import_record.status {
+                ImageImportStatus::Imported => ExitCode::SUCCESS,
+                ImageImportStatus::Failed => ExitCode::from(3),
+            })
         }
     }
+}
+
+fn validate_package(
+    package: PathBuf,
+    services: PathBuf,
+    state_dir: PathBuf,
+) -> Result<ValidationRecord, CliError> {
+    let catalog = load_service_catalog(&services)?;
+    let store = FilesystemStore::new(state_dir);
+    let updater_version = Version::parse(UPDATER_VERSION).map_err(CliError::VersionParse)?;
+    let app = ValidationApp::filesystem(catalog, store, updater_version);
+
+    app.validate_package(ValidatePackageRequest {
+        package_path: package,
+    })
+    .map_err(CliError::Package)
 }
 
 #[derive(Debug, Parser)]
@@ -64,11 +97,22 @@ enum Commands {
         #[arg(long, default_value = ".caisson-state")]
         state_dir: PathBuf,
     },
+    /// Validate a package and import its staged `image.tar` into Docker.
+    ImportImage {
+        /// Path to the local `.edgepkg` file.
+        package: PathBuf,
+        /// Path to `services.toml`.
+        #[arg(long, default_value = "services.toml")]
+        services: PathBuf,
+        /// Root directory for local state, staging, and audit files.
+        #[arg(long, default_value = ".caisson-state")]
+        state_dir: PathBuf,
+    },
 }
 
-fn print_record(record: &ValidationRecord) {
+fn print_validation_record(record: &ValidationRecord) {
     println!("attempt_id: {}", record.attempt_id);
-    println!("status: {:?}", record.status);
+    println!("validation_status: {:?}", record.status);
     println!("source_path: {}", record.source_path.display());
 
     if let Some(staged_path) = record.staged_path.as_ref() {
@@ -89,9 +133,41 @@ fn print_record(record: &ValidationRecord) {
     }
 
     if record.issues.is_empty() {
-        println!("issues: none");
+        println!("validation_issues: none");
     } else {
-        println!("issues:");
+        println!("validation_issues:");
+        for issue in &record.issues {
+            println!("- [{}] {}", issue.code, issue.message);
+        }
+    }
+}
+
+fn print_image_import_record(record: &ImageImportRecord) {
+    println!("import_id: {}", record.import_id);
+    println!("image_import_status: {:?}", record.status);
+    println!("service: {}", record.service_name);
+    println!("image_reference: {}", record.image_reference);
+
+    if let Some(candidate_release_id) = record.candidate_release_id {
+        println!("candidate_release_id: {candidate_release_id}");
+    }
+
+    if let Some(imported_image) = record.imported_image.as_ref() {
+        println!("imported_image_id: {}", imported_image.image_id);
+        println!("imported_repo_tags: {:?}", imported_image.repo_tags);
+        println!("imported_repo_digests: {:?}", imported_image.repo_digests);
+        if let Some(os) = imported_image.os.as_ref() {
+            println!("imported_os: {os}");
+        }
+        if let Some(architecture) = imported_image.architecture.as_ref() {
+            println!("imported_architecture: {architecture}");
+        }
+    }
+
+    if record.issues.is_empty() {
+        println!("image_import_issues: none");
+    } else {
+        println!("image_import_issues:");
         for issue in &record.issues {
             println!("- [{}] {}", issue.code, issue.message);
         }
@@ -107,4 +183,8 @@ pub enum CliError {
     VersionParse(semver::Error),
     #[error("{0}")]
     Package(#[from] crate::package::PackageIntakeError),
+    #[error("{0}")]
+    Docker(#[from] DockerClientError),
+    #[error("{0}")]
+    Import(#[from] ImageImportError),
 }

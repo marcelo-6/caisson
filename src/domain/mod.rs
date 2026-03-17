@@ -1,5 +1,4 @@
 //! Domain types shared across the crate.
-//!
 
 use std::fmt::{self, Display};
 use std::path::PathBuf;
@@ -18,7 +17,7 @@ pub const SUPPORTED_SERVICE_CATALOG_VERSION: u64 = 1;
 /// A predefined service from `services.toml`.
 ///
 /// Think of this as the one blessed description of what the updater is allowed
-/// to touch. If a service is not in here, the updater should pretend it does
+/// to touch. If a service is not in here, the updater should act like it does
 /// not exist.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ManagedService {
@@ -80,8 +79,6 @@ pub struct PackageManifest {
 }
 
 /// The package kind accepted by the baseline updater.
-///
-/// For now there is only one allowed value.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PackageType {
     Service,
@@ -149,6 +146,16 @@ pub struct ImageArchiveMetadata {
     pub size_bytes: u64,
 }
 
+/// Normalized metadata captured after a Docker image is imported and inspected.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ImportedImageMetadata {
+    pub image_id: String,
+    pub repo_tags: Vec<String>,
+    pub repo_digests: Vec<String>,
+    pub architecture: Option<String>,
+    pub os: Option<String>,
+}
+
 /// Validation status for a package intake attempt.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -157,7 +164,15 @@ pub enum ValidationStatus {
     Rejected,
 }
 
-/// A single actionable validation issue.
+/// Import status for a Docker image-load attempt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageImportStatus {
+    Imported,
+    Failed,
+}
+
+/// A single actionable validation or import issue.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct ValidationIssue {
     pub code: String,
@@ -165,7 +180,7 @@ pub struct ValidationIssue {
 }
 
 impl ValidationIssue {
-    /// Helper for creating a validation issue
+    /// Helper for issue value.
     #[must_use]
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
@@ -220,14 +235,113 @@ impl ValidationRecord {
         self.status = ValidationStatus::Accepted;
     }
 
-    /// Adds a validation issue and keeps the record rejected.
+    /// Adds an issue and keeps the record rejected.
     pub fn reject_with(&mut self, issue: ValidationIssue) {
         self.status = ValidationStatus::Rejected;
         self.issues.push(issue);
     }
 }
 
-/// A local audit event emitted during package validation.
+/// The persisted result of one Docker image-import attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ImageImportRecord {
+    pub import_id: Uuid,
+    pub validation_attempt_id: Uuid,
+    pub status: ImageImportStatus,
+    pub service_name: String,
+    pub image_reference: String,
+    pub package_version: Version,
+    #[serde(with = "time::serde::rfc3339")]
+    pub imported_at: OffsetDateTime,
+    pub imported_image: Option<ImportedImageMetadata>,
+    pub candidate_release_id: Option<Uuid>,
+    pub issues: Vec<ValidationIssue>,
+}
+
+impl ImageImportRecord {
+    /// Creates a failed import record.
+    #[must_use]
+    pub fn new(
+        import_id: Uuid,
+        validation_attempt_id: Uuid,
+        service_name: String,
+        image_reference: String,
+        package_version: Version,
+        imported_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            import_id,
+            validation_attempt_id,
+            status: ImageImportStatus::Failed,
+            service_name,
+            image_reference,
+            package_version,
+            imported_at,
+            imported_image: None,
+            candidate_release_id: None,
+            issues: Vec::new(),
+        }
+    }
+
+    /// Marks the import as successful and links the candidate release.
+    pub fn mark_imported(
+        &mut self,
+        imported_image: ImportedImageMetadata,
+        candidate_release_id: Uuid,
+    ) {
+        self.status = ImageImportStatus::Imported;
+        self.imported_image = Some(imported_image);
+        self.candidate_release_id = Some(candidate_release_id);
+    }
+
+    /// Adds an issue and keeps the import marked as failed.
+    pub fn fail_with(&mut self, issue: ValidationIssue) {
+        self.status = ImageImportStatus::Failed;
+        self.issues.push(issue);
+    }
+}
+
+/// A persisted imported image that is ready for the later apply workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct CandidateReleaseRecord {
+    pub candidate_release_id: Uuid,
+    pub import_id: Uuid,
+    pub validation_attempt_id: Uuid,
+    pub service_name: String,
+    pub image_reference: String,
+    pub package_version: Version,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    pub imported_image: ImportedImageMetadata,
+}
+
+impl CandidateReleaseRecord {
+    /// Builds a candidate release from a successful import.
+    #[must_use]
+    pub fn new(
+        candidate_release_id: Uuid,
+        import_id: Uuid,
+        validation_attempt_id: Uuid,
+        service_name: String,
+        image_reference: String,
+        package_version: Version,
+        created_at: OffsetDateTime,
+        imported_image: ImportedImageMetadata,
+    ) -> Self {
+        Self {
+            candidate_release_id,
+            import_id,
+            validation_attempt_id,
+            service_name,
+            image_reference,
+            package_version,
+            created_at,
+            imported_image,
+        }
+    }
+}
+
+/// A local audit event emitted during package validation or image import.
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct AuditEvent {
     pub event_id: Uuid,
@@ -245,4 +359,7 @@ pub enum AuditEventKind {
     ValidationStarted,
     ValidationAccepted,
     ValidationRejected,
+    ImageImportStarted,
+    ImageImportSucceeded,
+    ImageImportFailed,
 }
