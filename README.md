@@ -170,4 +170,15 @@ For a one-shot local smoke test, run:
 ./scripts/docker-test.sh
 ```
 
+To build just the lightweight demo package used in local docs and demos:
+
+```bash
+./scripts/make-demo-edgepkg.sh
+```
+
 Test fixtures live under `tests/fixtures/`.
+
+## More docs
+
+- [docs/cli.md](/home/marcelo/projects/caisson/docs/cli.md)
+- [docs/releases.md](/home/marcelo/projects/caisson/docs/releases.md)
