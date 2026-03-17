@@ -79,7 +79,7 @@ changelog-dry-run-offline:
 # show dependencies of this project
 [group('development')]
 dependencies:
-    cargo tree
+    cargo tree --depth 1
 
 # generate the documentation of this project
 [group('development')]
