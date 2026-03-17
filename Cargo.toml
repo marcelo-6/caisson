@@ -1,6 +1,6 @@
 [package]
 name = "caisson"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 edition = "2024"
 authors = ["Marcelo Amorim"]
 description = "Offline Docker service updater for airgapped edge devices"
