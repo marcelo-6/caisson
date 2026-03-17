@@ -8,7 +8,7 @@ pr_labels = ["release"] # add the `release` label to the release Pull Request
 publish_allow_dirty = true # add `--allow-dirty` to `cargo publish`
 semver_check = false # disable API breaking changes checks
 publish_timeout = "30m" # set a timeout for `cargo publish`
-release_commits = "^feat:" # prepare release only if at least one commit matches a regex
+# release_commits = "^feat:" # prepare release only if at least one commit matches a regex
 release_always = false
 repo_url = "https://github.com/marcelo-6/caisson"
 
