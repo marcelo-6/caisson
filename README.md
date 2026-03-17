@@ -126,6 +126,14 @@ cargo run -- history list --state-dir .caisson-state
 cargo run -- history show <update-id> --state-dir .caisson-state
 ```
 
+If you want to remove leftover local package artifacts created under the updater state directory:
+
+```bash
+cargo run -- package cleanup --state-dir .caisson-state
+```
+
+That command currently cleans only the local package workspace. It does not remove validation records, audit history, candidate releases, or service state.
+
 Quick way to build a local package for manual testing is:
 
 ```bash
