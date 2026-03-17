@@ -317,6 +317,7 @@ pub struct CandidateReleaseRecord {
 
 impl CandidateReleaseRecord {
     /// Builds a candidate release from a successful import.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         candidate_release_id: Uuid,
