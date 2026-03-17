@@ -2,13 +2,23 @@
 name = "caisson"
 version = "0.1.0-alpha"
 edition = "2024"
+authors = ["Marcelo Amorim"]
 description = "Offline Docker service updater for airgapped edge devices"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/marcelo-6/caisson"
 homepage = "https://github.com/marcelo-6/caisson"
+documentation = "https://docs.rs/caisson"
 keywords = ["docker", "edge", "offline", "updater", "airgap"]
 categories = ["command-line-utilities"]
+
+include = [
+    "/src/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+]
 
 [dependencies]
 bollard = "0.20"
