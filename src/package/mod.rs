@@ -668,7 +668,7 @@ fn validate_manifest(
             ),
         ));
     }
-
+    #[allow(clippy::collapsible_if)]
     if let Some(min_version) = manifest.compatibility.min_updater_version.as_ref() {
         if current_updater_version < min_version {
             issues.push(ValidationIssue::new(
