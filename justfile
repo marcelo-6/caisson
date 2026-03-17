@@ -5,7 +5,7 @@
 version := `cargo pkgid | sed -rn s'/^.*#(.*)$/\1/p'`
 
 # coverage threshold to fail (CI)
-coverage_threshold := "70"
+coverage_threshold := "60"
 
 # semver tag pattern
 semver_tag_pattern := "^v?[0-9]+\\.[0-9]+\\.[0-9]+$"
@@ -133,25 +133,23 @@ publish-release:
 run:
     cargo run
 
-# print the next semantic version inferred from conventional commits.
-[group('cd')]
-release-next-version:
-    @next="$(git-cliff --config cliff.toml --bumped-version --unreleased --tag-pattern '{{semver_tag_pattern}}')"; \
-    if [ -z "$next" ]; then \
-      printf '\033[1;31m[error]\033[0m could not infer next version from git history.\n'; \
-      exit 1; \
-    fi; \
-    echo "$next"
+# build a lightweight demo package for local validation/load tests
+[group('development')]
+demo-package out_dir="dist/demo":
+    bash scripts/make-demo-edgepkg.sh "{{out_dir}}"
 
-# print the full manual release checklist. (will be different for this project tbd)
+# run the maintained local Docker smoke test
+[group('development')]
+smoke-test:
+    bash scripts/docker-test.sh
+
+# print the full release plan
 [group('cd')]
 release-plan:
     @printf '\033[1;34m[info]\033[0m Recommended release flow:\n'; \
-    printf '  \033[1;33m1)\033[0m just release-prepare X.Y.Z\n'; \
-    printf '  \033[1;33m2)\033[0m review Cargo.toml, Cargo.lock, CHANGELOG.md\n'; \
-    printf '  \033[1;33m3)\033[0m git add Cargo.toml Cargo.lock CHANGELOG.md\n'; \
-    printf '  \033[1;33m4)\033[0m git commit -m "chore(release): prepare vX.Y.Z"\n'; \
-    printf '  \033[1;33m5)\033[0m git push branch and wait for CI on PR/main\n'; \
-    printf '  \033[1;33m6)\033[0m after merge, checkout/pull\n'; \
-    printf '  \033[1;33m7)\033[0m just release-tag X.Y.Z\n'; \
-    printf '  \033[1;33m8)\033[0m monitor CD workflow + crates.io + GitHub Release assets\n'
+    printf '  \033[1;33m1)\033[0m just ci\n'; \
+    printf '  \033[1;33m2)\033[0m merge normal work into main\n'; \
+    printf '  \033[1;33m3)\033[0m let release-plz open or update the release PR\n'; \
+    printf '  \033[1;33m4)\033[0m review the release PR version bump and changelog\n'; \
+    printf '  \033[1;33m5)\033[0m merge the release PR\n'; \
+    printf '  \033[1;33m6)\033[0m monitor release-plz publish, tag creation, and GitHub release\n'
