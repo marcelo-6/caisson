@@ -89,9 +89,9 @@ commit_parsers = [
 
 postprocessors = [
     # Format the rendered changelog using `dprint`
-    { pattern = ".*", replace = "dprint fmt --stdin md" }
+    # { pattern = ".*", replace = "dprint fmt --stdin md" }
 ]
 
 link_parsers = [
-    { pattern = "RFC(\\d+)", text = "ietf-rfc$1", href = "https://datatracker.ietf.org/doc/html/rfc$1"}
+    # { pattern = "RFC(\\d+)", text = "ietf-rfc$1", href = "https://datatracker.ietf.org/doc/html/rfc$1"}
 ]
