@@ -21,7 +21,7 @@ include = [
 ]
 
 [dependencies]
-bollard = "0.20"
+bollard = "0.21"
 bytes = "1"
 clap = { version = "4.6", features = ["derive"] }
 futures-util = "0.3"
