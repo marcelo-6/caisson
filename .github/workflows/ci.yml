@@ -20,13 +20,13 @@ jobs:
     #     run: rustup update stable
 
       - name: Install just
-        uses: taiki-e/cache-cargo-install-action@v3
+        uses: taiki-e/cache-cargo-install-action@v3.0.7
         with:
           tool: just
 
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/cache-cargo-install-action@v3
+        uses: taiki-e/cache-cargo-install-action@v3.0.7
         with:
           tool: cargo-llvm-cov
 
